@@ -6,6 +6,9 @@
 # TypeScript build cache
 *.tsbuildinfo
 
+#agents
+.agents/
+
 # Logs
 logs
 *.log
