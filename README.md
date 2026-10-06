@@ -47,13 +47,13 @@ cliente debe autenticarse con Supabase y enviar el encabezado Authorization con 
 
 ```text
 src/
-├── auth/          # autenticación, sesiones, roles y guards
-├── common/        # utilidades, filtros, pipes y excepciones compartidas
-├── restaurants/   # empresas donantes y sus actividades
-├── users/         # perfiles, organizaciones y repartidores
-├── orders/        # solicitudes/asignaciones de donaciones
-├── delivery/      # asignación y operación de entregas
-├── tracking/      # historial y ubicación de entregas
+├── auth/            # autenticación, sesiones, roles y guards
+├── common/          # utilidades, filtros, pipes y excepciones compartidas
+├── organizations/   # empresas donantes y sus actividades
+├── users/           # perfiles, organizaciones, miembros y repartidores
+├── donations/       # solicitudes/asignaciones de donaciones 
+├── deliveries/      # asignación y operación de entregas
+├── delivery_events/ # historial y ubicación de entregas
 ├── app.module.ts
 └── main.ts
 ```
@@ -106,7 +106,7 @@ SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_ANON_KEY=<public-anon-key>
 SUPABASE_SERVICE_ROLE_KEY=<server-only-key>
 SUPABASE_STORAGE_BUCKET=donation-evidence
-CORS_ORIGIN=http://localhost:5173
+CORS_ORIGIN=http://localhost:3001
 ```
 
 `SUPABASE_SERVICE_ROLE_KEY` solo puede existir en el servidor y nunca debe
