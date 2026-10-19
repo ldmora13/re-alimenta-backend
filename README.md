@@ -10,13 +10,14 @@ asignado por la empresa donante transporta los productos hasta el destino.
 > CRUD para organizations, addresses, profiles, organization-members, donations,
 > donation-items, deliveries y attachments; delivery-events solo permite crear y
 > consultar, y audit-logs solo lectura. También están la capa de Supabase, la
-> validación con DTOs, la autenticación por JWT de Supabase, el manejo uniforme
-> de errores, la paginación/filtros, Scalar y la migración SQL versionada.
+> validación con DTOs, la autenticación por JWT de Supabase, los endpoints de
+> `auth` (`register`/`login`/`refresh`/`logout`), la subida y descarga de
+> archivos con Supabase Storage, el manejo uniforme de errores, la
+> paginación/filtros, Scalar y las migraciones SQL versionadas.
 >
 > Quedan **fuera de esta fase** (documentados como objetivo, no implementados):
-> `POST /auth/register|login|refresh|logout`, subida real de archivos a
-> Supabase Storage, reglas de negocio de transición de estados, rate limiting y
-> notificaciones.
+> `GET/PATCH /users/me`, reglas de negocio de transición de estados, rate
+> limiting y notificaciones.
 
 ## Flujo principal
 
@@ -54,8 +55,8 @@ cliente debe autenticarse con Supabase y enviar el encabezado Authorization con 
 
 ```text
 src/
-├── supabase/            # cliente Supabase inyectable (usuario y administrador)
-├── auth/                # guard JWT de Supabase y decorador @CurrentUser/@Public
+├── supabase/            # cliente Supabase inyectable (usuario, anónimo y administrador)
+├── auth/                # register/login/refresh/logout, guard JWT y @CurrentUser/@Public
 ├── common/
 │   ├── crud.service.ts  # CRUD genérico contra Supabase (create/findOne/list/update/remove)
 │   ├── database-errors.ts
@@ -70,9 +71,9 @@ src/
 ├── donation-items/
 ├── deliveries/
 ├── delivery_events/     # ruta /api/delivery-events
-├── attachments/
+├── attachments/         # metadata + upload/download con Supabase Storage
 ├── audit-logs/          # solo lectura
-├── app.setup.ts         # prefijo, ValidationPipe, filtros, CORS y Scalar
+├── app.setup.ts         # prefijo, multipart, ValidationPipe, filtros, CORS y Scalar
 ├── app.module.ts
 └── main.ts
 ```
@@ -167,8 +168,9 @@ Las transiciones deben validarse en el backend y registrarse en
 ## CRUD implementado
 
 Todos los recursos siguen el mismo contrato y requieren `Authorization: Bearer
-<token>` (salvo `GET /api/health`). `delivery-events` y `audit-logs` no exponen
-todas las operaciones (ver notas):
+<token>` (salvo `GET /api/health` y las rutas públicas de `auth`).
+`delivery-events`, `attachments` y `audit-logs` no exponen todas las
+operaciones (ver notas):
 
 ```text
 POST   /api/{recurso}        201 Created
@@ -198,6 +200,11 @@ Notas de implementación:
   desde el servidor con el cliente privilegiado.
 - **Eventos inmutables:** `delivery-events` solo expone `POST` y `GET`. No hay
   `PATCH`/`DELETE` porque la RLS tampoco los permite: el historial no se edita.
+- **Adjuntos:** `POST /api/attachments` recibe `multipart/form-data` con
+  `organization_id`, `resource_type`, `resource_id` y `file`; sube el objeto y
+  registra la fila. `GET /api/attachments/:id/url` devuelve una URL firmada por
+  1 hora y `DELETE` borra la fila y el objeto. No hay `PATCH`: el `storage_path`
+  lo genera el servidor para que un cliente no pueda apuntar a otro objeto.
 - **Verificación de organizaciones:** al crear una organización siempre queda
   `verification_status: "pending"`; el cliente no puede auto-verificarse. Solo
   un admin de la organización puede cambiarlo con `PATCH /api/organizations/:id`.
@@ -215,21 +222,36 @@ Notas de implementación:
 - **Salud:** `GET /api/health` (público) comprueba la conectividad con Supabase
   sin exponer detalles.
 
+## Autenticación
+
+| Método | Ruta | Propósito |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | Crear usuario, perfil y devolver la sesión (público) |
+| `POST` | `/api/auth/login` | Iniciar sesión y devolver la sesión (público) |
+| `POST` | `/api/auth/refresh` | Renovar el acceso con `refresh_token` (público) |
+| `POST` | `/api/auth/logout` | Revocar la sesión actual (requiere Bearer) |
+
+`register` crea el usuario con el admin client de Supabase, crea su `profile` y
+devuelve la sesión. Por ahora el email se auto-confirma (`email_confirm: true`)
+para no depender de un proveedor de correo; si se exige verificación, hay que
+cambiar a `signUp` y completar el flujo de confirmación.
+
+`login` y `refresh` devuelven la sesión de Supabase (`access_token`,
+`refresh_token`, `expires_in`, `user`). Usa `access_token` como
+`Authorization: Bearer <access_token>`. El guard lo valida con
+`supabase.getUser()` y las consultas se ejecutan con ese JWT, por lo que **las
+políticas RLS son la segunda capa de autorización**.
+
 ### Obtener un token para probar
 
-El backend no implementa login (fuera del alcance del CRUD). Un token válido se
-obtiene de Supabase Auth, por ejemplo:
-
 ```bash
-curl -X POST "https://<project-ref>.supabase.co/auth/v1/token?grant_type=password" \
-  -H "apikey: <SUPABASE_ANON_KEY>" \
+curl -X POST http://127.0.0.1:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"usuario@ejemplo.com","password":"..."}'
+  -d '{"email":"usuario@ejemplo.com","password":"<PASSWORD>"}'
 ```
 
-Usa `access_token` como `Authorization: Bearer <access_token>`. El guard lo
-valida con `supabase.auth.getUser()` y las consultas se ejecutan con ese JWT,
-por lo que **las políticas RLS son la segunda capa de autorización**.
+También se puede obtener directamente desde Supabase Auth con
+`POST https://<project-ref>.supabase.co/auth/v1/token?grant_type=password`.
 
 ### Prueba manual del flujo completo
 
@@ -345,18 +367,14 @@ Todas las rutas se sirven bajo `/api`, devuelven JSON y requieren autenticación
 salvo que se indique lo contrario. Las respuestas de listado deben incluir
 paginación (`page`, `limit`, `total`) y filtros validados.
 
-> Las rutas de `auth` (`register`/`login`/`refresh`/`logout`), las acciones de
-> negocio (`publish`, `accept`, `cancel`, `status`, `tracking`, `evidence`) y
-> `/users/me` **no** están implementadas todavía.
+> Las rutas de `auth` ya están implementadas (ver **Autenticación**). Las
+> acciones de negocio (`publish`, `accept`, `cancel`, `status`, `tracking`,
+> `evidence`) y `/users/me` **no** están implementadas todavía.
 
-### Autenticación y usuarios
+### Usuarios
 
 | Método | Ruta | Propósito |
 | --- | --- | --- |
-| `POST` | `/auth/register` | Crear usuario y perfil mediante Supabase Auth |
-| `POST` | `/auth/login` | Iniciar sesión y devolver sesión/token |
-| `POST` | `/auth/refresh` | Renovar sesión |
-| `POST` | `/auth/logout` | Cerrar sesión |
 | `GET` | `/users/me` | Consultar perfil y organizaciones |
 | `PATCH` | `/users/me` | Actualizar datos permitidos |
 
@@ -408,12 +426,21 @@ relación explícita.
 
 ## Supabase Storage
 
-Usar buckets privados, rutas con el formato
-`{organization_id}/{resource_type}/{resource_id}/{filename}` y URLs firmadas
-con expiración para servir archivos. Validar MIME, extensión, tamaño y nombre
-antes de subir. Guardar únicamente el path y metadatos en `attachments`.
-Eliminar o marcar archivos huérfanos cuando se cancele un recurso y auditar
-las descargas de evidencias sensibles.
+Implementado con un bucket privado (`SUPABASE_STORAGE_BUCKET`, por defecto
+`donation-evidence`) y rutas
+`{organization_id}/{resource_type}/{resource_id}/{uuid}.{ext}`. El backend:
+
+- valida `multipart/form-data`, MIME permitido (`image/jpeg`, `image/png`,
+  `image/webp`, `application/pdf`) y tamaño máximo (10 MB);
+- genera el nombre del objeto (no usa el nombre enviado por el cliente);
+- sube y firma con el JWT del usuario, por lo que las políticas de
+  `storage.objects` refuerzan la pertenencia a la organización;
+- guarda únicamente el path y metadatos en `attachments`;
+- devuelve URLs firmadas de 1 hora y borra el objeto junto con la fila.
+
+La migración `supabase/migrations/20261019000000_storage_attachments.sql` crea
+el bucket y las políticas RLS. Queda pendiente limpiar por job los objetos
+huérfanos si falla un borrado y auditar las descargas de evidencias sensibles.
 
 ## Seguridad y confiabilidad
 
@@ -438,7 +465,11 @@ primarias/foráneas, `CHECK` e índices, triggers de `updated_at`, funciones
 `SECURITY DEFINER` para pertenencia (`is_org_member`, `is_org_admin`,
 `can_access_donation`, `can_access_delivery`) y políticas RLS por tabla.
 
-Aplicar la migración (elige una):
+`supabase/migrations/20261019000000_storage_attachments.sql` añade el bucket
+privado de evidencias y sus políticas RLS. Toda modificación de base de datos
+debe entrar por una migración nueva, no por cambios manuales en el dashboard.
+
+Aplicar las migraciones (elige una):
 
 ```bash
 # Con la CLI de Supabase
@@ -455,7 +486,7 @@ con la service role key (que omite RLS). `delivery_events` tampoco permite
 ## Pruebas
 
 ```bash
-npm run test     # unitarias (CrudService + stubs)
+npm run test     # unitarias (CrudService, auth y attachments)
 npm run test:e2e # end-to-end (AppModule con Supabase simulado)
 npm run lint
 npm run build

@@ -22,7 +22,7 @@ async function bootstrap() {
     }),
   );
 
-  configureApp(app);
+  await configureApp(app);
 
   await app.listen({
     port: Number(process.env.PORT) || 3000,

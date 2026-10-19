@@ -29,6 +29,7 @@ export class SupabaseService {
   private readonly anonKey: string;
   private readonly serviceRoleKey: string;
   private adminClient?: SupabaseClient;
+  private anonClient?: SupabaseClient;
 
   constructor() {
     this.url = requiredEnv('SUPABASE_URL');
@@ -41,6 +42,14 @@ export class SupabaseService {
       auth: { persistSession: false, autoRefreshToken: false },
     });
     return this.adminClient;
+  }
+
+  /** Cliente anónimo para login/refresh (no conserva sesión en el servidor). */
+  get anon(): SupabaseClient {
+    this.anonClient ??= createClient(this.url, this.anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    return this.anonClient;
   }
 
   forUser(token: string): SupabaseClient {

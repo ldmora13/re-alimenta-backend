@@ -99,6 +99,16 @@ class FakeBuilder {
 export class FakeClient {
   tables: Record<string, Array<Record<string, unknown>>> = {};
   nextError: { code: string } | null = null;
+  storage = {
+    from: (_bucket: string) => ({
+      upload: async (path: string) => ({ data: { path }, error: null }),
+      remove: async (_paths: string[]) => ({ data: [], error: null }),
+      createSignedUrl: async (path: string) => ({
+        data: { signedUrl: `https://storage.test/${path}` },
+        error: null,
+      }),
+    }),
+  };
   from(table: string) {
     return new FakeBuilder(this, table);
   }

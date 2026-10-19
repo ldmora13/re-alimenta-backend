@@ -36,7 +36,7 @@ describe('CRUD (e2e)', () => {
         routerOptions: { ignoreTrailingSlash: true },
       }),
     );
-    configureApp(app as NestFastifyApplication);
+    await configureApp(app as NestFastifyApplication);
     await app.init();
     await (app as NestFastifyApplication)
       .getHttpAdapter()
@@ -207,5 +207,41 @@ describe('CRUD (e2e)', () => {
 
     expect(response.body.total).toBe(1);
     expect(response.body.data[0].tax_id).toBe('RUC-002');
+  });
+
+  it('expone register/login/refresh sin token y valida sus DTO', async () => {
+    await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: 'no-es-email', password: '123' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({ email: 'usuario@ejemplo.com', password: 'corta', full_name: 'X' })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .send({})
+      .expect(400);
+  });
+
+  it('protege logout y adjuntos sin token', async () => {
+    await request(app.getHttpServer()).post('/api/auth/logout').expect(401);
+
+    const response = await request(app.getHttpServer())
+      .post('/api/attachments')
+      .expect(401);
+    expect(response.body).toMatchObject({ code: 'AUTH_TOKEN_MISSING' });
+  });
+
+  it('exige multipart/form-data para subir un adjunto', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/attachments')
+      .set('Authorization', AUTH)
+      .send({ organization_id: '11111111-1111-4111-8111-111111111111' })
+      .expect(400);
+
+    expect(response.body).toMatchObject({ code: 'INVALID_CONTENT_TYPE' });
   });
 });
