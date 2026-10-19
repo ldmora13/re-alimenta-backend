@@ -1,43 +1,42 @@
 import { Module } from '@nestjs/common';
-import { createObserveModule } from '@nestjs/observe';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
-import { OrdersModule } from './donations/orders.module.js';
+import { AddressesModule } from './addresses/addresses.module.js';
+import { AttachmentsModule } from './attachments/attachments.module.js';
+import { AuditLogsModule } from './audit-logs/audit-logs.module.js';
 import { AuthModule } from './auth/auth.module.js';
-import { CommonModule } from './common/common.module.js';
-import { DeliveryModule } from './deliveries/delivery.module.js';
-import { RestaurantsModule } from './restaurants/restaurants.module.js';
-import { TrackingModule } from './delivery_events/tracking.module.js';
-import { UsersModule } from './users/users.module.js';
+import { SupabaseAuthGuard } from './auth/supabase-auth.guard.js';
 import { DeliveriesModule } from './deliveries/deliveries.module.js';
 import { DeliveryEventsModule } from './delivery_events/delivery_events.module.js';
+import { DonationItemsModule } from './donation-items/donation-items.module.js';
 import { DonationsModule } from './donations/donations.module.js';
+import { HealthController } from './health/health.controller.js';
+import { OrganizationMembersModule } from './organization-members/organization-members.module.js';
 import { OrganizationsModule } from './organizations/organizations.module.js';
-
-export const { ObserveModule, ObserveInstrument } = createObserveModule();
+import { ProfilesModule } from './profiles/profiles.module.js';
+import { SupabaseModule } from './supabase/supabase.module.js';
 
 @Module({
   imports: [
-    // Distributed tracing, auto-correlated logs, request/job metrics, error
-    // telemetry, alarms, and more — out of the box. Sign up at https://observe.nestjs.com
-    ObserveModule.forRoot({
-      appKey: 'YOUR_APP_KEY',
-      appSecret: 'YOUR_APP_SECRET',
-      serviceId: 'backend',
-    }),
-    OrdersModule,
+    SupabaseModule,
     AuthModule,
-    CommonModule,
-    DeliveryModule,
-    RestaurantsModule,
-    TrackingModule,
-    UsersModule,
+    AuditLogsModule,
+    OrganizationsModule,
+    AddressesModule,
+    ProfilesModule,
+    OrganizationMembersModule,
+    DonationsModule,
+    DonationItemsModule,
     DeliveriesModule,
     DeliveryEventsModule,
-    DonationsModule,
-    OrganizationsModule,
+    AttachmentsModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [AppController, HealthController],
+  providers: [
+    AppService,
+    // Autenticación por defecto: toda ruta exige JWT salvo las marcadas @Public.
+    { provide: APP_GUARD, useClass: SupabaseAuthGuard },
+  ],
 })
 export class AppModule {}

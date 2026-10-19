@@ -6,10 +6,17 @@ sociales que pueden aprovecharlos. La empresa donante crea una actividad de
 recolección, una empresa receptora la revisa y acepta, y un repartidor
 asignado por la empresa donante transporta los productos hasta el destino.
 
-> **Estado actual:** el repositorio contiene el esqueleto inicial de NestJS y
-> los módulos de dominio. La integración con Supabase, la autenticación y los
-> casos de uso de donaciones/recolecciones aún deben implementarse. Las rutas
-> descritas en este documento son el contrato técnico objetivo.
+> **Estado actual:** están implementados los endpoints REST sobre Supabase con
+> CRUD para organizations, addresses, profiles, organization-members, donations,
+> donation-items, deliveries y attachments; delivery-events solo permite crear y
+> consultar, y audit-logs solo lectura. También están la capa de Supabase, la
+> validación con DTOs, la autenticación por JWT de Supabase, el manejo uniforme
+> de errores, la paginación/filtros, Scalar y la migración SQL versionada.
+>
+> Quedan **fuera de esta fase** (documentados como objetivo, no implementados):
+> `POST /auth/register|login|refresh|logout`, subida real de archivos a
+> Supabase Storage, reglas de negocio de transición de estados, rate limiting y
+> notificaciones.
 
 ## Flujo principal
 
@@ -47,20 +54,32 @@ cliente debe autenticarse con Supabase y enviar el encabezado Authorization con 
 
 ```text
 src/
-├── auth/            # autenticación, sesiones, roles y guards
-├── common/          # utilidades, filtros, pipes y excepciones compartidas
-├── organizations/   # empresas donantes y sus actividades
-├── users/           # perfiles, organizaciones, miembros y repartidores
-├── donations/       # solicitudes/asignaciones de donaciones 
-├── deliveries/      # asignación y operación de entregas
-├── delivery_events/ # historial y ubicación de entregas
+├── supabase/            # cliente Supabase inyectable (usuario y administrador)
+├── auth/                # guard JWT de Supabase y decorador @CurrentUser/@Public
+├── common/
+│   ├── crud.service.ts  # CRUD genérico contra Supabase (create/findOne/list/update/remove)
+│   ├── database-errors.ts
+│   ├── dto/             # paginación
+│   └── filters/         # filtro global de excepciones
+├── health/              # GET /api/health
+├── organizations/
+├── addresses/
+├── profiles/
+├── organization-members/
+├── donations/
+├── donation-items/
+├── deliveries/
+├── delivery_events/     # ruta /api/delivery-events
+├── attachments/
+├── audit-logs/          # solo lectura
+├── app.setup.ts         # prefijo, ValidationPipe, filtros, CORS y Scalar
 ├── app.module.ts
 └── main.ts
 ```
 
-Cada módulo debe mantener la separación NestJS de `controller`, `service`,
-DTOs, entidades/tipos, validaciones y pruebas. Las reglas que cambian estados
-deben vivir en servicios transaccionales, no en los controladores.
+Cada módulo mantiene la separación NestJS de `controller`, `service`, DTOs y
+tipos. Los controladores solo delegan en el servicio; la lógica de acceso a
+datos vive en `CrudService` y en los overrides de cada servicio.
 
 ## Configuración local
 
@@ -114,26 +133,23 @@ enviarse al cliente ni registrarse en logs. En producción, las variables se
 configuran en el proveedor de despliegue. La aplicación debe fallar al
 arrancar si faltan variables obligatorias, en vez de usar valores falsos.
 
-## Modelo de datos recomendado en Supabase
+## Modelo de datos en Supabase
 
-Las tablas deben usar UUID, `created_at` y `updated_at` con valores generados
-por la base de datos. `auth.users` es administrada por Supabase Auth; las
-tablas de negocio deben referenciarla sin guardar contraseñas.
+Las tablas usan UUID, `created_at` y, cuando son mutables, `updated_at`
+gestionado por trigger. `auth.users` es administrada por Supabase Auth; las
+tablas de negocio la referencian sin guardar contraseñas.
 
-- `profiles`: perfil de usuario, nombre, teléfono y estado.
-- `organizations`: empresa donante, empresa social o proveedor logístico;
-  nombre legal, identificación, contacto y estado de verificación.
-- `organization_members`: relación entre usuarios y organizaciones con rol.
-- `addresses`: direcciones de recolección y entrega, coordenadas y referencias.
-- `donations`: actividad publicada por una organización donante, descripción,
-  categoría, cantidad, unidad, fechas límite, estado y organización receptora.
-- `donation_items`: productos individuales, cantidades, unidad y condiciones.
-- `deliveries`: donación, repartidor, origen, destino, ventana de entrega y
-  estado logístico.
-- `delivery_events`: historial inmutable de cambios de estado, actor, fecha,
-  ubicación y observaciones.
-- `attachments`: metadatos de archivos almacenados en Supabase Storage.
-- `audit_logs`: actor, acción, recurso, identificador y metadatos no sensibles.
+> **Decisión sobre `auth_users`:** el diagrama la listaba como tabla propia,
+> pero duplicar usuarios de Supabase Auth obligaría a mantener dos fuentes de
+> identidad. No se crea: `profiles.id`, `organization_members.user_id`,
+> `deliveries.courier_id`, `delivery_events.actor_id`,
+> `attachments.uploaded_by` y `audit_logs.actor_id` referencian
+> `auth.users(id)`.
+
+Tablas: `profiles`, `organizations`, `organization_members`, `addresses`,
+`donations`, `donation_items`, `deliveries`, `delivery_events`, `attachments`
+y `audit_logs` (ver
+`supabase/migrations/20260101000000_re_alimenta_crud.sql`).
 
 Estados sugeridos:
 
@@ -148,11 +164,190 @@ Las transiciones deben validarse en el backend y registrarse en
 `delivery_events`; no se deben permitir actualizaciones arbitrarias de
 `status` desde el cliente.
 
-## API REST objetivo
+## CRUD implementado
+
+Todos los recursos siguen el mismo contrato y requieren `Authorization: Bearer
+<token>` (salvo `GET /api/health`). `delivery-events` y `audit-logs` no exponen
+todas las operaciones (ver notas):
+
+```text
+POST   /api/{recurso}        201 Created
+GET    /api/{recurso}        200 OK   (?page=&limit=&sort=&order=&filtros)
+GET    /api/{recurso}/:id    200 OK
+PATCH  /api/{recurso}/:id    200 OK
+DELETE /api/{recurso}/:id    204 No Content
+```
+
+| Recurso | Ruta base | Filtros de listado |
+| --- | --- | --- |
+| Organizaciones | `/api/organizations` | `type`, `verification_status`, `tax_id`, `search` |
+| Direcciones | `/api/addresses` | `organization_id` |
+| Perfiles | `/api/profiles` | `status`, `search` |
+| Miembros de organización | `/api/organization-members` | `organization_id`, `user_id`, `role`, `status` |
+| Donaciones | `/api/donations` | `status`, `donor_organization_id`, `recipient_organization_id`, `search` |
+| Ítems de donación | `/api/donation-items` | `donation_id`, `category`, `condition`, `search` |
+| Entregas | `/api/deliveries` | `donation_id`, `courier_id`, `status` |
+| Eventos de entrega | `/api/delivery-events` | `delivery_id`, `event_type`, `status`, `actor_id` (solo POST/GET) |
+| Adjuntos | `/api/attachments` | `organization_id`, `resource_type`, `resource_id`, `uploaded_by` |
+| Auditoría | `/api/audit-logs` | `actor_id`, `action`, `resource_type`, `resource_id` |
+
+Notas de implementación:
+
+- **Auditoría de solo lectura:** `audit-logs` solo expone `GET`. Para el resto de
+  recursos, cada `POST`/`PATCH`/`DELETE` escribe un registro en `audit_logs`
+  desde el servidor con el cliente privilegiado.
+- **Eventos inmutables:** `delivery-events` solo expone `POST` y `GET`. No hay
+  `PATCH`/`DELETE` porque la RLS tampoco los permite: el historial no se edita.
+- **Verificación de organizaciones:** al crear una organización siempre queda
+  `verification_status: "pending"`; el cliente no puede auto-verificarse. Solo
+  un admin de la organización puede cambiarlo con `PATCH /api/organizations/:id`.
+- **Identidad del servidor:** `profiles.id`, `delivery_events.actor_id` y
+  `attachments.uploaded_by` se derivan del JWT; el cuerpo nunca puede
+  establecerlos. `occurred_at` de los eventos lo fija el servidor.
+- **Listados:** `page` (≥1), `limit` (1–100, por defecto 20), `sort` solo con
+  campos permitidos por recurso y `order=asc|desc`. Respuesta:
+  `{ "data": [...], "page": 1, "limit": 20, "total": 42 }`.
+- **Errores:** formato uniforme
+  `{ "statusCode", "message", "code", "timestamp" }`; `400` DTO inválido,
+  `401` token ausente/inválido, `403` permisos, `404` inexistente, `409`
+  conflicto/unique/FK, `422` restricción de datos, `500` error interno.
+- **Documentación:** Scalar en `GET /api/docs`.
+- **Salud:** `GET /api/health` (público) comprueba la conectividad con Supabase
+  sin exponer detalles.
+
+### Obtener un token para probar
+
+El backend no implementa login (fuera del alcance del CRUD). Un token válido se
+obtiene de Supabase Auth, por ejemplo:
+
+```bash
+curl -X POST "https://<project-ref>.supabase.co/auth/v1/token?grant_type=password" \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"usuario@ejemplo.com","password":"..."}'
+```
+
+Usa `access_token` como `Authorization: Bearer <access_token>`. El guard lo
+valida con `supabase.auth.getUser()` y las consultas se ejecutan con ese JWT,
+por lo que **las políticas RLS son la segunda capa de autorización**.
+
+### Prueba manual del flujo completo
+
+`/api` es el prefijo global. `GET /api/` devuelve una respuesta simple de
+verificación; para comprobar también la conectividad con Supabase usa
+`GET /api/health`. La documentación interactiva está disponible en
+`GET /api/docs`.
+
+El siguiente flujo usa el CRUD actualmente implementado. Guarda el `id` que
+devuelve cada respuesta y reemplaza los valores entre `<...>` en la siguiente
+petición. Todas las rutas, excepto `/api/health`, requieren:
+
+```text
+Authorization: Bearer <SUPABASE_ACCESS_TOKEN>
+```
+
+#### 1. Crear organizaciones y ubicaciones
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/organizations \
+  -H "Authorization: Bearer <TOKEN_DONANTE>" -H "Content-Type: application/json" \
+  -d '{"legal_name":"Restaurante Donante","type":"donor","tax_id":"RUC-DONANTE-001"}'
+
+curl -X POST http://127.0.0.1:3000/api/organizations \
+  -H "Authorization: Bearer <TOKEN_RECEPTORA>" -H "Content-Type: application/json" \
+  -d '{"legal_name":"Fundacion Receptora","type":"recipient","tax_id":"RUC-RECEPTORA-001"}'
+```
+
+Usa los identificadores devueltos para crear las direcciones:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/addresses \
+  -H "Authorization: Bearer <TOKEN_DONANTE>" -H "Content-Type: application/json" \
+  -d '{"organization_id":"<DONOR_ORG_ID>","label":"Cocina principal","address_line":"Av. Siempre Viva 123","latitude":4.711000,"longitude":-74.072000}'
+
+curl -X POST http://127.0.0.1:3000/api/addresses \
+  -H "Authorization: Bearer <TOKEN_RECEPTORA>" -H "Content-Type: application/json" \
+  -d '{"organization_id":"<RECIPIENT_ORG_ID>","label":"Centro de recepcion","address_line":"Cra. 45-67","latitude":4.681000,"longitude":-74.050000}'
+```
+
+#### 2. Crear la donación y el producto
+
+El CRUD aún no tiene `POST /donations/:id/publish`; crea la donación
+directamente en `published` para probar el recorrido:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/donations \
+  -H "Authorization: Bearer <TOKEN_DONANTE>" -H "Content-Type: application/json" \
+  -d '{"donor_organization_id":"<DONOR_ORG_ID>","pickup_address_id":"<PICKUP_ADDRESS_ID>","status":"published","description":"Alimentos preparados del dia","available_from":"2026-10-19","available_until":"2026-10-20"}'
+
+curl -X POST http://127.0.0.1:3000/api/donation-items \
+  -H "Authorization: Bearer <TOKEN_DONANTE>" -H "Content-Type: application/json" \
+  -d '{"donation_id":"<DONATION_ID>","name":"Arroz con verduras","quantity":25,"category":"prepared_food","condition":"fresh"}'
+```
+
+#### 3. Solicitar y asignar la entrega
+
+La solicitud se representa actualmente actualizando la donación:
+
+```bash
+curl -X PATCH http://127.0.0.1:3000/api/donations/<DONATION_ID> \
+  -H "Authorization: Bearer <TOKEN_RECEPTORA>" -H "Content-Type: application/json" \
+  -d '{"recipient_organization_id":"<RECIPIENT_ORG_ID>","delivery_address_id":"<DELIVERY_ADDRESS_ID>","status":"reserved"}'
+```
+
+`courier_id` debe ser el UUID de un usuario existente en `auth.users`:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/deliveries \
+  -H "Authorization: Bearer <TOKEN_DONANTE>" -H "Content-Type: application/json" \
+  -d '{"donation_id":"<DONATION_ID>","courier_id":"<COURIER_USER_ID>","origin_address_id":"<PICKUP_ADDRESS_ID>","destination_address_id":"<DELIVERY_ADDRESS_ID>","status":"assigned","scheduled_at":"2026-10-19T18:00:00.000Z"}'
+```
+
+#### 4. Recoger, transportar y entregar
+
+Registra cada hito con el token del repartidor. `actor_id` y `occurred_at`
+los fija el servidor:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/delivery-events \
+  -H "Authorization: Bearer <TOKEN_REPARTIDOR>" -H "Content-Type: application/json" \
+  -d '{"delivery_id":"<DELIVERY_ID>","event_type":"picked_up","status":"picked_up","latitude":4.711000,"longitude":-74.072000}'
+
+curl -X PATCH http://127.0.0.1:3000/api/deliveries/<DELIVERY_ID> \
+  -H "Authorization: Bearer <TOKEN_REPARTIDOR>" -H "Content-Type: application/json" \
+  -d '{"status":"in_transit"}'
+
+curl -X POST http://127.0.0.1:3000/api/delivery-events \
+  -H "Authorization: Bearer <TOKEN_REPARTIDOR>" -H "Content-Type: application/json" \
+  -d '{"delivery_id":"<DELIVERY_ID>","event_type":"delivered","status":"delivered","latitude":4.681000,"longitude":-74.050000}'
+
+curl -X PATCH http://127.0.0.1:3000/api/deliveries/<DELIVERY_ID> \
+  -H "Authorization: Bearer <TOKEN_REPARTIDOR>" -H "Content-Type: application/json" \
+  -d '{"status":"delivered"}'
+
+curl -X PATCH http://127.0.0.1:3000/api/donations/<DONATION_ID> \
+  -H "Authorization: Bearer <TOKEN_DONANTE>" -H "Content-Type: application/json" \
+  -d '{"status":"delivered"}'
+```
+
+Comprueba el resultado con `GET /api/donations/<DONATION_ID>`,
+`GET /api/donation-items?donation_id=<DONATION_ID>`,
+`GET /api/deliveries/<DELIVERY_ID>` y
+`GET /api/delivery-events?delivery_id=<DELIVERY_ID>`.
+
+Este recorrido comprueba el CRUD y la trazabilidad, pero todavía no aplica
+transiciones de estado, aceptación atómica, permisos por rol ni acciones
+dedicadas de negocio. Esas reglas están documentadas como fases posteriores.
+
+## API REST objetivo (fases posteriores)
 
 Todas las rutas se sirven bajo `/api`, devuelven JSON y requieren autenticación
 salvo que se indique lo contrario. Las respuestas de listado deben incluir
 paginación (`page`, `limit`, `total`) y filtros validados.
+
+> Las rutas de `auth` (`register`/`login`/`refresh`/`logout`), las acciones de
+> negocio (`publish`, `accept`, `cancel`, `status`, `tracking`, `evidence`) y
+> `/users/me` **no** están implementadas todavía.
 
 ### Autenticación y usuarios
 
@@ -234,6 +429,40 @@ las descargas de evidencias sensibles.
   ubicación; usar PostGIS si se requieren búsquedas geográficas.
 - Añadir health checks de aplicación, base de datos y Storage.
 - Configurar backups, migraciones versionadas y políticas de retención.
+
+## Migraciones y RLS
+
+El esquema completo está en
+`supabase/migrations/20260101000000_re_alimenta_crud.sql`: tablas, claves
+primarias/foráneas, `CHECK` e índices, triggers de `updated_at`, funciones
+`SECURITY DEFINER` para pertenencia (`is_org_member`, `is_org_admin`,
+`can_access_donation`, `can_access_delivery`) y políticas RLS por tabla.
+
+Aplicar la migración (elige una):
+
+```bash
+# Con la CLI de Supabase
+npx supabase link --project-ref <project-ref>
+npx supabase db push
+
+# O pega el contenido del .sql en el SQL Editor del dashboard
+```
+
+`audit_logs` no tiene políticas de escritura: los registros los crea el servidor
+con la service role key (que omite RLS). `delivery_events` tampoco permite
+`UPDATE`/`DELETE` desde el cliente, para preservar el historial.
+
+## Pruebas
+
+```bash
+npm run test     # unitarias (CrudService + stubs)
+npm run test:e2e # end-to-end (AppModule con Supabase simulado)
+npm run lint
+npm run build
+```
+
+Las pruebas no usan credenciales reales: `test/fake-supabase.ts` implementa un
+cliente en memoria. La persistencia real solo se ejerce contra Supabase.
 
 ## Despliegue
 
