@@ -6,18 +6,18 @@ sociales que pueden aprovecharlos. La empresa donante crea una actividad de
 recolección, una empresa receptora la revisa y acepta, y un repartidor
 asignado por la empresa donante transporta los productos hasta el destino.
 
-> **Estado actual:** están implementados los endpoints REST sobre Supabase con
-> CRUD para organizations, addresses, profiles, organization-members, donations,
-> donation-items, deliveries y attachments; delivery-events solo permite crear y
-> consultar, y audit-logs solo lectura. También están la capa de Supabase, la
-> validación con DTOs, la autenticación por JWT de Supabase, los endpoints de
-> `auth` (`register`/`login`/`refresh`/`logout`), la subida y descarga de
-> archivos con Supabase Storage, el manejo uniforme de errores, la
-> paginación/filtros, Scalar y las migraciones SQL versionadas.
+> **Estado actual:** Están implementados los endpoints REST sobre Supabase con
+> operaciones para `organizations`, `addresses`, `profiles`, `organization-members`,
+> `donations`, `donation-items`, `deliveries`, `attachments` (con Supabase Storage),
+> `delivery-events` (append-only) y `audit-logs` (solo lectura). La API cuenta con
+> autenticación JWT delegada en Supabase Auth (`register`, `login`, `refresh`, `logout`),
+> validación exhaustiva con DTOs y class-validator, documentación interactiva en
+> `/api/docs` (Scalar) y una cobertura de 35 pruebas automatizadas pasando (19 unitarias y 16 e2e).
 >
-> Quedan **fuera de esta fase** (documentados como objetivo, no implementados):
-> `GET/PATCH /users/me`, reglas de negocio de transición de estados, rate
-> limiting y notificaciones.
+> **Pendientes para la siguiente fase:**
+> 1. Endpoints de dominio transaccionales (p. ej. `POST /api/donations/:id/reserve` para cambiar estado y crear la entrega en `deliveries` de forma atómica).
+> 2. Políticas RLS de lectura cruzada en `addresses` para permitir que el repartidor asignado y la contraparte vean los puntos de origen y destino.
+> 3. Rate limiting (`@nestjs/throttler`) y servicio de notificaciones.
 
 ## Flujo principal
 
